@@ -5,7 +5,11 @@ from database.connection import engine
 from strategy.daily_levels import calculate_daily_levels
 from strategy.orb import calculate_opening_range
 from strategy.session import add_new_york_time, regular_session
-from strategy.signals import find_first_orb_breakout, find_first_orb_retest
+from strategy.signals import (
+    find_first_orb_breakout,
+    find_first_orb_retest,
+    find_first_orb_retest_reclaim,
+)
 from backtest.engine import simulate_trade
 from backtest.excursion import calculate_excursion
 from backtest.metrics import summarize_trades
@@ -15,7 +19,7 @@ TICKER = "AAPL"
 START_DATE = "2024-01-02"
 END_DATE = "2024-12-31"
 
-STRATEGY_VERSION = "ORB_RETEST_2R"
+STRATEGY_VERSION = "ORB_RETEST_RECLAIM_2R"
 RETEST_MAX_BARS = 5
 RETEST_TOLERANCE_OR_FRACTION = 0.10
 
@@ -69,9 +73,10 @@ def load_data(
 
 def main():
 
-    is_retest = STRATEGY_VERSION == "ORB_RETEST_2R"
+    is_reclaim = STRATEGY_VERSION == "ORB_RETEST_RECLAIM_2R"
+    is_retest = STRATEGY_VERSION == "ORB_RETEST_2R" or is_reclaim
     if is_retest and (EXIT_MODE != "FIXED_R" or EARLY_BREAKOUT_ONLY):
-        raise ValueError("ORB_RETEST_2R requires FIXED_R and no early-breakout filter.")
+        raise ValueError(f"{STRATEGY_VERSION} requires FIXED_R and no early-breakout filter.")
 
     print("=" * 60)
     print(f"{STRATEGY_VERSION} BACKTEST")
@@ -81,7 +86,11 @@ def main():
     if is_retest:
         print(f"Retest/confirmation window: {RETEST_MAX_BARS} bars after breakout")
         print(f"Tolerance / OR range: {RETEST_TOLERANCE_OR_FRACTION}")
-        print("First band overlap fixes retest; later close beyond its high/low confirms.")
+        if is_reclaim:
+            print("First band overlap must close strictly beyond the broken OR boundary.")
+            print("Retest is confirmation; failed reclaim ends setup; no later confirmation.")
+        else:
+            print("First band overlap fixes retest; later close beyond its high/low confirms.")
         print("Invalidation checked first; entry at next open; stop at opposite OR boundary.")
 
     df = load_data(
@@ -168,7 +177,8 @@ def main():
                 continue
 
         if is_retest:
-            breakout = find_first_orb_retest(
+            find_signal = find_first_orb_retest_reclaim if is_reclaim else find_first_orb_retest
+            breakout = find_signal(
                 day_df,
                 or_high=orb["or_high"],
                 or_low=orb["or_low"],
