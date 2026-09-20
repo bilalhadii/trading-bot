@@ -70,3 +70,77 @@ def find_first_orb_breakout(
             }
 
     return None
+
+
+def find_first_orb_retest(
+    session_df: pd.DataFrame,
+    or_high: float,
+    or_low: float,
+    max_bars: int,
+    tolerance_or_fraction: float,
+) -> Optional[dict]:
+    """Find a retest/confirmation of only the first confirmed ORB breakout.
+
+    Both retest and confirmation must occur in the next ``max_bars`` bars.
+    The first candle whose high/low overlaps the inclusive boundary band
+    fixes the retest high/low. Confirmation must be on a later candle and
+    close strictly beyond that extreme. Invalidation is checked first on
+    every setup candle, including a possible retest or confirmation candle.
+
+    Entry is the next available candle's open, which may be outside the
+    setup window but must remain in this session. Input is one sorted or
+    unsorted regular session of one-minute candles. No second breakout or
+    replacement retest is considered. The breakout's immediate entry fields
+    are ignored and replaced only after confirmation.
+    """
+    if isinstance(max_bars, bool) or not isinstance(max_bars, int) or max_bars < 1:
+        raise ValueError("max_bars must be a positive integer.")
+    if not 0 <= tolerance_or_fraction < float("inf"):
+        raise ValueError("tolerance_or_fraction must be finite and nonnegative.")
+    or_high, or_low = float(or_high), float(or_low)
+    if not 0 < or_high - or_low < float("inf"):
+        raise ValueError("Opening range must be finite and positive.")
+
+    df = session_df.sort_values("timestamp_ny").reset_index(drop=True)
+    breakout = find_first_orb_breakout(df, or_high, or_low)
+    if breakout is None:
+        return None
+
+    is_long = breakout["direction"] == "LONG"
+    boundary = or_high if is_long else or_low
+    tolerance = (or_high - or_low) * tolerance_or_fraction
+    lower, upper = boundary - tolerance, boundary + tolerance
+    breakout_index = df.index[
+        df["timestamp_ny"] == breakout["breakout_timestamp"]
+    ][0]
+    retest = None
+
+    for index in range(breakout_index + 1, min(breakout_index + max_bars + 1, len(df))):
+        candle = df.iloc[index]
+        close = float(candle["close"])
+        if (is_long and close < lower) or (not is_long and close > upper):
+            return None
+
+        if retest is None:
+            if float(candle["low"]) <= upper and float(candle["high"]) >= lower:
+                retest = candle
+            continue
+
+        confirmed = (
+            close > float(retest["high"])
+            if is_long else close < float(retest["low"])
+        )
+        if confirmed:
+            if index + 1 >= len(df):
+                return None
+            entry = df.iloc[index + 1]
+            return {
+                **breakout,
+                "retest_timestamp": retest["timestamp_ny"],
+                "confirmation_timestamp": candle["timestamp_ny"],
+                "retest_tolerance": tolerance,
+                "entry_timestamp": entry["timestamp_ny"],
+                "entry_price": float(entry["open"]),
+            }
+
+    return None

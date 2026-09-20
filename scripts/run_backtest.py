@@ -5,7 +5,7 @@ from database.connection import engine
 from strategy.daily_levels import calculate_daily_levels
 from strategy.orb import calculate_opening_range
 from strategy.session import add_new_york_time, regular_session
-from strategy.signals import find_first_orb_breakout
+from strategy.signals import find_first_orb_breakout, find_first_orb_retest
 from backtest.engine import simulate_trade
 from backtest.excursion import calculate_excursion
 from backtest.metrics import summarize_trades
@@ -15,7 +15,9 @@ TICKER = "AAPL"
 START_DATE = "2024-01-02"
 END_DATE = "2024-12-31"
 
-STRATEGY_VERSION = "ORB_BASELINE_2R"
+STRATEGY_VERSION = "ORB_RETEST_2R"
+RETEST_MAX_BARS = 5
+RETEST_TOLERANCE_OR_FRACTION = 0.10
 
 EXIT_MODE = "FIXED_R"
 TARGET_R = 2.0
@@ -67,9 +69,20 @@ def load_data(
 
 def main():
 
+    is_retest = STRATEGY_VERSION == "ORB_RETEST_2R"
+    if is_retest and (EXIT_MODE != "FIXED_R" or EARLY_BREAKOUT_ONLY):
+        raise ValueError("ORB_RETEST_2R requires FIXED_R and no early-breakout filter.")
+
     print("=" * 60)
     print(f"{STRATEGY_VERSION} BACKTEST")
     print("=" * 60)
+    print(f"Ticker: {TICKER}; dates: {START_DATE} through {END_DATE}")
+    print(f"Exit mode: {EXIT_MODE}; target R: {TARGET_R}")
+    if is_retest:
+        print(f"Retest/confirmation window: {RETEST_MAX_BARS} bars after breakout")
+        print(f"Tolerance / OR range: {RETEST_TOLERANCE_OR_FRACTION}")
+        print("First band overlap fixes retest; later close beyond its high/low confirms.")
+        print("Invalidation checked first; entry at next open; stop at opposite OR boundary.")
 
     df = load_data(
         TICKER,
@@ -154,7 +167,20 @@ def main():
             ):
                 continue
 
-        # BASELINE TRADE SETUP
+        if is_retest:
+            breakout = find_first_orb_retest(
+                day_df,
+                or_high=orb["or_high"],
+                or_low=orb["or_low"],
+                max_bars=RETEST_MAX_BARS,
+                tolerance_or_fraction=RETEST_TOLERANCE_OR_FRACTION,
+            )
+            if breakout is None:
+                continue
+
+        signal_time = breakout.get("confirmation_timestamp", breakout["breakout_timestamp"])
+
+        # TRADE SETUP: same opposite-OR stop and fixed-R framework.
         # --------------------------------------------------
 
         if breakout["direction"] == "LONG":
@@ -180,6 +206,12 @@ def main():
         risk = abs(
             entry_price - stop_price
         )
+        if is_retest:
+            risk = (
+                entry_price - stop_price
+                if breakout["direction"] == "LONG"
+                else stop_price - entry_price
+            )
 
         if risk <= 0:
             continue
@@ -303,7 +335,7 @@ def main():
                 breakout["direction"],
 
             "signal_time":
-                breakout["breakout_timestamp"],
+                signal_time,
 
             "entry_time":
                 breakout["entry_timestamp"],
@@ -383,7 +415,7 @@ def main():
             "ticker": TICKER,
             "trade_date": trading_date,
             "direction": breakout["direction"],
-            "signal_time": breakout["breakout_timestamp"],
+            "signal_time": signal_time,
             "entry_time": breakout["entry_timestamp"],
             "exit_time": result["exit_time"],
             "entry_price": entry_price,
@@ -427,6 +459,9 @@ def main():
         print(f"Trades:         {metrics['trades']}")
         print(f"Wins:           {metrics['wins']}")
         print(f"Losses:         {metrics['losses']}")
+        print(f"Target hits:    {(results_df['outcome'] == 'WIN').sum()}")
+        print(f"Stop hits:      {(results_df['outcome'] == 'LOSS').sum()}")
+        print(f"Positive trades: {metrics['wins']}")
         print(
             f"Session closes: {metrics['session_closes']}"
         )
