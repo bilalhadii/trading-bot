@@ -9,6 +9,8 @@ from strategy.signals import (
     find_first_orb_breakout,
     find_first_orb_retest,
     find_first_orb_retest_reclaim,
+    find_first_orb_retest_reclaim_body,
+    find_first_orb_retest_reclaim_body_rejection_reason,
 )
 from backtest.engine import simulate_trade
 from backtest.excursion import calculate_excursion
@@ -19,7 +21,7 @@ TICKER = "AAPL"
 START_DATE = "2024-01-02"
 END_DATE = "2024-12-31"
 
-STRATEGY_VERSION = "ORB_RETEST_RECLAIM_2R"
+STRATEGY_VERSION = "ORB_RETEST_RECLAIM_BODY_2R"
 RETEST_MAX_BARS = 5
 RETEST_TOLERANCE_OR_FRACTION = 0.10
 
@@ -74,7 +76,8 @@ def load_data(
 def main():
 
     is_reclaim = STRATEGY_VERSION == "ORB_RETEST_RECLAIM_2R"
-    is_retest = STRATEGY_VERSION == "ORB_RETEST_2R" or is_reclaim
+    is_reclaim_body = STRATEGY_VERSION == "ORB_RETEST_RECLAIM_BODY_2R"
+    is_retest = STRATEGY_VERSION == "ORB_RETEST_2R" or is_reclaim or is_reclaim_body
     if is_retest and (EXIT_MODE != "FIXED_R" or EARLY_BREAKOUT_ONLY):
         raise ValueError(f"{STRATEGY_VERSION} requires FIXED_R and no early-breakout filter.")
 
@@ -86,7 +89,10 @@ def main():
     if is_retest:
         print(f"Retest/confirmation window: {RETEST_MAX_BARS} bars after breakout")
         print(f"Tolerance / OR range: {RETEST_TOLERANCE_OR_FRACTION}")
-        if is_reclaim:
+        if is_reclaim_body:
+            print("First band overlap must reclaim the OR boundary with a body aligned to the breakout.")
+            print("Failed reclaim/body alignment ends setup; no later confirmation.")
+        elif is_reclaim:
             print("First band overlap must close strictly beyond the broken OR boundary.")
             print("Retest is confirmation; failed reclaim ends setup; no later confirmation.")
         else:
@@ -115,6 +121,7 @@ def main():
     total_days = 0
     breakouts = 0
     valid_setups = 0
+    reclaim_body_disagreement_rejects = 0
     trades = []
 
     for trading_date in trading_dates:
@@ -177,7 +184,12 @@ def main():
                 continue
 
         if is_retest:
-            find_signal = find_first_orb_retest_reclaim if is_reclaim else find_first_orb_retest
+            if is_reclaim_body:
+                find_signal = find_first_orb_retest_reclaim_body
+            elif is_reclaim:
+                find_signal = find_first_orb_retest_reclaim
+            else:
+                find_signal = find_first_orb_retest
             breakout = find_signal(
                 day_df,
                 or_high=orb["or_high"],
@@ -186,6 +198,16 @@ def main():
                 tolerance_or_fraction=RETEST_TOLERANCE_OR_FRACTION,
             )
             if breakout is None:
+                if is_reclaim_body:
+                    reason = find_first_orb_retest_reclaim_body_rejection_reason(
+                        day_df,
+                        or_high=orb["or_high"],
+                        or_low=orb["or_low"],
+                        max_bars=RETEST_MAX_BARS,
+                        tolerance_or_fraction=RETEST_TOLERANCE_OR_FRACTION,
+                    )
+                    if reason == "BODY_DISAGREEMENT":
+                        reclaim_body_disagreement_rejects += 1
                 continue
 
         signal_time = breakout.get("confirmation_timestamp", breakout["breakout_timestamp"])
@@ -456,6 +478,8 @@ def main():
     print(f"Breakouts:     {breakouts}")
     print(f"Valid setups:  {valid_setups}")
     print(f"Executed:      {len(trades)}")
+    if is_reclaim_body:
+        print(f"Body disagreement rejects: {reclaim_body_disagreement_rejects}")
 
     if trades:
 

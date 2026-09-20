@@ -203,3 +203,101 @@ def find_first_orb_retest_reclaim(
                 "entry_price": float(entry["open"]),
             }
     return None
+
+
+def find_first_orb_retest_reclaim_body(
+    session_df: pd.DataFrame,
+    or_high: float,
+    or_low: float,
+    max_bars: int,
+    tolerance_or_fraction: float,
+) -> Optional[dict]:
+    """Confirm on a direction-aligned reclaim candle body.
+
+    This is the reclaim experiment plus one frozen filter: the first
+    inclusive band overlap must reclaim the broken OR boundary and close
+    with a candle body aligned with the breakout direction. If that first
+    overlap fails either condition, the setup fails immediately.
+    """
+    signal, _ = _find_first_orb_retest_reclaim_body(
+        session_df=session_df,
+        or_high=or_high,
+        or_low=or_low,
+        max_bars=max_bars,
+        tolerance_or_fraction=tolerance_or_fraction,
+    )
+    return signal
+
+
+def find_first_orb_retest_reclaim_body_rejection_reason(
+    session_df: pd.DataFrame,
+    or_high: float,
+    or_low: float,
+    max_bars: int,
+    tolerance_or_fraction: float,
+) -> Optional[str]:
+    """Return why the body-reclaim setup failed, when diagnosable."""
+    _, reason = _find_first_orb_retest_reclaim_body(
+        session_df=session_df,
+        or_high=or_high,
+        or_low=or_low,
+        max_bars=max_bars,
+        tolerance_or_fraction=tolerance_or_fraction,
+    )
+    return reason
+
+
+def _find_first_orb_retest_reclaim_body(
+    session_df: pd.DataFrame,
+    or_high: float,
+    or_low: float,
+    max_bars: int,
+    tolerance_or_fraction: float,
+) -> tuple[Optional[dict], Optional[str]]:
+    if isinstance(max_bars, bool) or not isinstance(max_bars, int) or max_bars < 1:
+        raise ValueError("max_bars must be a positive integer.")
+    if not 0 <= tolerance_or_fraction < float("inf"):
+        raise ValueError("tolerance_or_fraction must be finite and nonnegative.")
+    or_high, or_low = float(or_high), float(or_low)
+    if not 0 < or_high - or_low < float("inf"):
+        raise ValueError("Opening range must be finite and positive.")
+
+    df = session_df.sort_values("timestamp_ny").reset_index(drop=True)
+    breakout = find_first_orb_breakout(df, or_high, or_low)
+    if breakout is None:
+        return None, "NO_BREAKOUT"
+
+    is_long = breakout["direction"] == "LONG"
+    boundary = or_high if is_long else or_low
+    tolerance = (or_high - or_low) * tolerance_or_fraction
+    lower, upper = boundary - tolerance, boundary + tolerance
+    breakout_index = df.index[
+        df["timestamp_ny"] == breakout["breakout_timestamp"]
+    ][0]
+    window_end = min(breakout_index + max_bars + 1, len(df))
+
+    for index in range(breakout_index + 1, window_end):
+        candle = df.iloc[index]
+        open_price = float(candle["open"])
+        close = float(candle["close"])
+        if (is_long and close < lower) or (not is_long and close > upper):
+            return None, "INVALIDATED"
+        if float(candle["low"]) <= upper and float(candle["high"]) >= lower:
+            reclaimed = close > boundary if is_long else close < boundary
+            if not reclaimed:
+                return None, "RECLAIM_FAILED"
+            body_aligned = close > open_price if is_long else close < open_price
+            if not body_aligned:
+                return None, "BODY_DISAGREEMENT"
+            if index + 1 >= len(df):
+                return None, "NO_ENTRY_CANDLE"
+            entry = df.iloc[index + 1]
+            return {
+                **breakout,
+                "retest_timestamp": candle["timestamp_ny"],
+                "confirmation_timestamp": candle["timestamp_ny"],
+                "retest_tolerance": tolerance,
+                "entry_timestamp": entry["timestamp_ny"],
+                "entry_price": float(entry["open"]),
+            }, None
+    return None, "NO_RETEST"
