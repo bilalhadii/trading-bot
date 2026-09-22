@@ -5,6 +5,11 @@ from database.connection import engine
 from strategy.daily_levels import calculate_daily_levels
 from strategy.orb import calculate_opening_range
 from strategy.session import add_new_york_time, regular_session
+from strategy.market_calendar import (
+    SessionQuality,
+    compare_session_minutes,
+    get_expected_regular_session_minutes,
+)
 from strategy.signals import (
     find_first_orb_breakout,
     find_first_orb_retest,
@@ -73,6 +78,58 @@ def load_data(
     return df
 
 
+
+def prepare_calendar_session(
+    df: pd.DataFrame,
+    trading_date,
+) -> tuple[pd.DataFrame, object]:
+    """
+    Return the scheduled exchange-session candles for one date and its
+    session-quality report.
+
+    The returned dataframe contains only calendar-expected regular-session
+    minutes. Missing candles are not filled.
+    """
+
+    if "timestamp_ny" not in df.columns:
+        df = add_new_york_time(df)
+    else:
+        df = df.copy()
+        df["timestamp_ny"] = pd.to_datetime(df["timestamp_ny"], utc=True).dt.tz_convert("America/New_York")
+
+    expected_minutes = get_expected_regular_session_minutes(trading_date)
+
+    if expected_minutes.empty:
+        report = compare_session_minutes(trading_date, [])
+        return df.iloc[0:0].copy(), report
+
+    day_df = df[
+        df["timestamp_ny"].dt.date == trading_date
+    ].copy()
+
+    expected_set = set(expected_minutes)
+    scheduled_df = day_df[
+        day_df["timestamp_ny"].dt.floor("min").isin(expected_set)
+    ].copy()
+
+    report = compare_session_minutes(
+        trading_date,
+        scheduled_df["timestamp_ny"],
+    )
+
+    return scheduled_df.sort_values("timestamp_ny"), report
+
+
+def is_strategy_session_eligible(report) -> bool:
+    return (
+        report.quality
+        in {
+            SessionQuality.COMPLETE,
+            SessionQuality.SCHEDULED_EARLY_CLOSE,
+        }
+        and report.opening_range_complete
+    )
+
 def main():
 
     is_reclaim = STRATEGY_VERSION == "ORB_RETEST_RECLAIM_2R"
@@ -106,14 +163,15 @@ def main():
     )
 
     df = add_new_york_time(df)
-    regular = regular_session(df)
+    legacy_regular = regular_session(df)
 
+    # Keep previous-day level behavior unchanged for this task.
     daily_levels = calculate_daily_levels(
-        regular
+        legacy_regular
     )
 
     trading_dates = sorted(
-        regular["timestamp_ny"]
+        df["timestamp_ny"]
         .dt.date
         .unique()
     )
@@ -128,14 +186,12 @@ def main():
 
         total_days += 1
 
-        day_df = regular[
-            regular["timestamp_ny"].dt.date
-            == trading_date
-        ].copy()
+        day_df, session_quality = prepare_calendar_session(
+            df,
+            trading_date,
+        )
 
-        EXPECTED_REGULAR_BARS = 390
-
-        if len(day_df) != EXPECTED_REGULAR_BARS:
+        if not is_strategy_session_eligible(session_quality):
             continue
         # Need previous day levels.
         levels = daily_levels.loc[
