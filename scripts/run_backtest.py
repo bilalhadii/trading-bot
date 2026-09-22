@@ -2,13 +2,14 @@ import pandas as pd
 from sqlalchemy import text
 from backtest.storage import save_trades
 from database.connection import engine
-from strategy.daily_levels import calculate_daily_levels
+from strategy.daily_levels import calculate_previous_session_levels
 from strategy.orb import calculate_opening_range
-from strategy.session import add_new_york_time, regular_session
+from strategy.session import add_new_york_time
 from strategy.market_calendar import (
     SessionQuality,
     compare_session_minutes,
     get_expected_regular_session_minutes,
+    get_previous_exchange_session,
 )
 from strategy.signals import (
     find_first_orb_breakout,
@@ -33,6 +34,27 @@ RETEST_TOLERANCE_OR_FRACTION = 0.10
 EXIT_MODE = "FIXED_R"
 TARGET_R = 2.0
 EARLY_BREAKOUT_ONLY = False
+
+STRATEGY_REQUIREMENTS = {
+    "ORB_BASELINE_2R": {"requires_previous_day_levels": False},
+    "ORB_RETEST_2R": {"requires_previous_day_levels": False},
+    "ORB_RETEST_RECLAIM_2R": {"requires_previous_day_levels": False},
+    "ORB_RETEST_RECLAIM_BODY_2R": {"requires_previous_day_levels": False},
+}
+
+
+def strategy_requires_previous_day_levels(
+    strategy_version: str,
+) -> bool:
+    if strategy_version not in STRATEGY_REQUIREMENTS:
+        raise ValueError(
+            f"Unknown strategy version: {strategy_version}"
+        )
+    return bool(
+        STRATEGY_REQUIREMENTS[strategy_version][
+            "requires_previous_day_levels"
+        ]
+    )
 
 def load_data(
     ticker: str,
@@ -76,6 +98,24 @@ def load_data(
     )
 
     return df
+
+
+def load_previous_exchange_session_data(
+    ticker: str,
+    trading_date,
+) -> pd.DataFrame:
+    previous_session = get_previous_exchange_session(
+        trading_date,
+    )
+
+    if previous_session is None:
+        return pd.DataFrame()
+
+    return load_data(
+        ticker,
+        str(previous_session),
+        str(previous_session),
+    )
 
 
 
@@ -163,11 +203,10 @@ def main():
     )
 
     df = add_new_york_time(df)
-    legacy_regular = regular_session(df)
 
-    # Keep previous-day level behavior unchanged for this task.
-    daily_levels = calculate_daily_levels(
-        legacy_regular
+    requires_previous_day_levels = (
+        strategy_requires_previous_day_levels(STRATEGY_VERSION)
+        or EXIT_MODE == "PDH_PDL"
     )
 
     trading_dates = sorted(
@@ -193,21 +232,28 @@ def main():
 
         if not is_strategy_session_eligible(session_quality):
             continue
-        # Need previous day levels.
-        levels = daily_levels.loc[
-            daily_levels.index == trading_date
-        ]
+        pdh = None
+        pdl = None
 
-        if levels.empty:
-            continue
+        if requires_previous_day_levels:
+            previous_session_data = load_previous_exchange_session_data(
+                TICKER,
+                trading_date,
+            )
+            if previous_session_data.empty:
+                continue
+            previous_session_data = add_new_york_time(
+                previous_session_data
+            )
+            levels = calculate_previous_session_levels(
+                previous_session_data,
+                trading_date,
+            )
+            pdh = levels["pdh"]
+            pdl = levels["pdl"]
 
-        row = levels.iloc[0]
-
-        pdh = row["pdh"]
-        pdl = row["pdl"]
-
-        if pd.isna(pdh) or pd.isna(pdl):
-            continue
+            if pd.isna(pdh) or pd.isna(pdl):
+                continue
 
         # Opening range
         orb = calculate_opening_range(

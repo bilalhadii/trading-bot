@@ -111,6 +111,18 @@ def get_session_type(trading_date: date | str | pd.Timestamp) -> SessionQuality:
     return SessionQuality.COMPLETE
 
 
+@lru_cache(maxsize=None)
+def get_previous_exchange_session(
+    trading_date: date | str | pd.Timestamp,
+) -> date | None:
+    label = _session_label(trading_date)
+    calendar = get_calendar()
+    previous = calendar.previous_session(label)
+    if previous is None:
+        return None
+    return previous.date()
+
+
 def _to_ny_minute_index(timestamps: Iterable[pd.Timestamp]) -> pd.DatetimeIndex:
     raw_values = list(timestamps)
     if not raw_values:
