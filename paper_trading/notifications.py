@@ -1,5 +1,6 @@
 import subprocess
 import smtplib
+import json
 import urllib.parse
 import urllib.request
 from email.message import EmailMessage
@@ -75,16 +76,16 @@ def notify_discord(
     if not webhook_url:
         return False
 
-    data = urllib.parse.urlencode(
-        {
-            "content": message,
-        }
-    ).encode("utf-8")
+    data = json.dumps({"content": message}).encode("utf-8")
 
     request = urllib.request.Request(
         webhook_url,
         data=data,
         method="POST",
+        headers={
+            "Content-Type": "application/json",
+            "User-Agent": "ai-trading-system",
+        },
     )
 
     try:
