@@ -45,12 +45,6 @@ jobs:
           TELEGRAM_BOT_TOKEN: ${{ secrets.TELEGRAM_BOT_TOKEN }}
           TELEGRAM_CHAT_ID: ${{ secrets.TELEGRAM_CHAT_ID }}
           DISCORD_WEBHOOK_URL: ${{ secrets.DISCORD_WEBHOOK_URL }}
-          SMTP_HOST: ${{ secrets.SMTP_HOST }}
-          SMTP_PORT: ${{ secrets.SMTP_PORT }}
-          SMTP_USERNAME: ${{ secrets.SMTP_USERNAME }}
-          SMTP_PASSWORD: ${{ secrets.SMTP_PASSWORD }}
-          SMTP_SENDER: ${{ secrets.SMTP_SENDER }}
-          ALERT_EMAIL_TO: ${{ secrets.ALERT_EMAIL_TO }}
         run: |
           SYMBOL="${{ github.event.inputs.symbol || 'AAPL' }}"
           CUTOFF="${{ github.event.inputs.cutoff || '10:15' }}"
@@ -59,7 +53,6 @@ jobs:
             --source live \
             --watch \
             --discord \
-            --email \
             --alert-status \
             --poll-seconds 60 \
             --cutoff "$CUTOFF" \
