@@ -21,6 +21,11 @@ from paper_trading.broker import (
     symbol_is_clear_to_trade,
 )
 from paper_trading.config import PaperTradingConfig
+from paper_trading.htf_breakout import (
+    HTFBreakoutConfig,
+    STRATEGY_VERSION as HTF_BREAKOUT_STRATEGY_VERSION,
+    build_htf_breakout_paper_trade_decision,
+)
 from paper_trading.notifications import (
     notify,
     notify_discord,
@@ -38,6 +43,7 @@ from strategy.session import add_new_york_time
 
 
 NY_TZ = ZoneInfo("America/New_York")
+ORB_BODY_STRATEGY_VERSION = "ORB_RETEST_RECLAIM_BODY_2R"
 
 
 def parse_args():
@@ -46,6 +52,11 @@ def parse_args():
     )
     parser.add_argument("--symbol", default="AAPL")
     parser.add_argument("--symbols", default=None, help="Comma-separated symbols to scan in watch mode.")
+    parser.add_argument(
+        "--strategies",
+        default=f"{ORB_BODY_STRATEGY_VERSION},{HTF_BREAKOUT_STRATEGY_VERSION}",
+        help="Comma-separated strategy lanes to scan.",
+    )
     parser.add_argument("--date", default=None, help="YYYY-MM-DD, defaults to today in New York.")
     parser.add_argument("--source", choices=["db", "live"], default="db")
     parser.add_argument("--submit", action="store_true", help="Submit to Alpaca paper account.")
@@ -85,6 +96,25 @@ def parse_symbols(symbol: str, symbols: str | None = None) -> list[str]:
     ]
     if not parsed:
         raise ValueError("At least one symbol is required.")
+    return list(dict.fromkeys(parsed))
+
+
+def parse_strategies(strategies: str) -> list[str]:
+    parsed = [
+        item.strip().upper()
+        for item in strategies.split(",")
+        if item.strip()
+    ]
+    if not parsed:
+        raise ValueError("At least one strategy is required.")
+
+    allowed = {
+        ORB_BODY_STRATEGY_VERSION,
+        HTF_BREAKOUT_STRATEGY_VERSION,
+    }
+    unknown = sorted(set(parsed) - allowed)
+    if unknown:
+        raise ValueError(f"Unknown strategy lane(s): {', '.join(unknown)}")
     return list(dict.fromkeys(parsed))
 
 
@@ -213,6 +243,31 @@ def load_live_session(symbol: str, trading_date) -> pd.DataFrame:
     return add_new_york_time(df)
 
 
+def load_live_daily(symbol: str, trading_date, lookback_days: int = 90) -> pd.DataFrame:
+    from data.alpaca_client import get_daily_bars
+
+    end = datetime.combine(
+        trading_date,
+        time(0, 0),
+        tzinfo=NY_TZ,
+    )
+    start = end - pd.Timedelta(days=lookback_days)
+
+    bars = get_daily_bars(
+        ticker=symbol.upper(),
+        start=start.astimezone(ZoneInfo("UTC")),
+        end=end.astimezone(ZoneInfo("UTC")),
+    )
+
+    df = bars.df.reset_index()
+    if df.empty:
+        return df
+
+    df = df.rename(columns={"symbol": "ticker"})
+    df["timestamp"] = pd.to_datetime(df["timestamp"], utc=True)
+    return df
+
+
 def filter_expected_session_minutes(df: pd.DataFrame, trading_date) -> tuple[pd.DataFrame, object]:
     expected_minutes = get_expected_regular_session_minutes(trading_date)
     if expected_minutes.empty or df.empty:
@@ -230,7 +285,7 @@ def filter_expected_session_minutes(df: pd.DataFrame, trading_date) -> tuple[pd.
     return scheduled_df.sort_values("timestamp_ny"), report
 
 
-def run_once(args, trading_date, config, dry_run: bool) -> tuple[str, object | None]:
+def run_once(args, trading_date, config, dry_run: bool, strategy_version: str) -> tuple[str, object | None]:
     dry_run = not args.submit
 
     trading_client = None
@@ -264,15 +319,32 @@ def run_once(args, trading_date, config, dry_run: bool) -> tuple[str, object | N
         print(f"REJECTED: SESSION_NOT_READY quality={quality.quality.value}")
         return "SESSION_NOT_READY", None
 
-    decision = build_retest_body_paper_trade_decision(
-        session_df=session_df,
-        symbol=args.symbol,
-        account_equity=account_equity,
-        config=config,
-        realized_daily_pnl=args.realized_daily_pnl,
-    )
+    if strategy_version == ORB_BODY_STRATEGY_VERSION:
+        decision = build_retest_body_paper_trade_decision(
+            session_df=session_df,
+            symbol=args.symbol,
+            account_equity=account_equity,
+            config=config,
+            realized_daily_pnl=args.realized_daily_pnl,
+        )
+    elif strategy_version == HTF_BREAKOUT_STRATEGY_VERSION:
+        if args.source != "live":
+            return "HTF_REQUIRES_LIVE_SOURCE", None
+        daily_df = load_live_daily(args.symbol, trading_date)
+        decision = build_htf_breakout_paper_trade_decision(
+            daily_df=daily_df,
+            session_df=session_df,
+            symbol=args.symbol,
+            account_equity=account_equity,
+            paper_config=config,
+            htf_config=HTFBreakoutConfig(),
+            realized_daily_pnl=args.realized_daily_pnl,
+        )
+    else:
+        raise ValueError(f"Unknown strategy lane: {strategy_version}")
 
     print(f"Symbol: {args.symbol.upper()}")
+    print(f"Strategy: {strategy_version}")
     print(f"Date: {trading_date}")
     print(f"Source: {args.source}")
     print(f"Mode: {'DRY_RUN' if dry_run else 'SUBMIT'}")
@@ -338,9 +410,10 @@ def main():
     trading_date = trading_date_from_args(args.date)
     dry_run = not args.submit
     symbols = parse_symbols(args.symbol, args.symbols)
+    strategies = parse_strategies(args.strategies)
 
-    if args.submit and len(symbols) > 1:
-        print("REJECTED: SUBMIT_REQUIRES_SINGLE_SYMBOL")
+    if args.submit and (len(symbols) > 1 or len(strategies) > 1):
+        print("REJECTED: SUBMIT_REQUIRES_SINGLE_SYMBOL_AND_STRATEGY")
         return
 
     if args.submit:
@@ -356,6 +429,7 @@ def main():
                 args,
                 (
                     f"Trading watch skipped: {', '.join(symbols)}\n"
+                    f"Strategies: {', '.join(strategies)}\n"
                     f"Reason: NO_EXCHANGE_SESSION\n"
                     f"Date: {trading_date}"
                 ),
@@ -371,7 +445,13 @@ def main():
     )
 
     if not args.watch:
-        reason, decision = run_once(args_for_symbol(args, symbols[0]), trading_date, config, dry_run)
+        reason, decision = run_once(
+            args_for_symbol(args, symbols[0]),
+            trading_date,
+            config,
+            dry_run,
+            strategies[0],
+        )
         if args.notify and reason == "APPROVED":
             notify(
                 "Paper Trading Signal",
@@ -385,26 +465,38 @@ def main():
         return
 
     cutoff = parse_ny_clock(args.cutoff)
-    approved_symbols = set()
-    active_symbols = set(symbols)
+    approved_lanes = set()
+    active_lanes = {
+        (symbol, strategy)
+        for symbol in symbols
+        for strategy in strategies
+    }
     print(
         f"WATCH MODE: {', '.join(symbols)} every {args.poll_seconds}s "
-        f"until {args.cutoff} NY; mode={'DRY_RUN' if dry_run else 'SUBMIT'}"
+        f"until {args.cutoff} NY; mode={'DRY_RUN' if dry_run else 'SUBMIT'}; "
+        f"strategies={', '.join(strategies)}"
     )
     if args.alert_status:
         send_mobile_alert(
             args,
             (
                 f"Trading watch started: {', '.join(symbols)}\n"
+                f"Strategies: {', '.join(strategies)}\n"
                 f"Mode: {'DRY RUN' if dry_run else 'PAPER SUBMIT'}\n"
                 f"Cutoff: {args.cutoff} New York"
             ),
         )
 
-    while datetime.now(tz=NY_TZ).time() <= cutoff and active_symbols:
-        for symbol in list(active_symbols):
+    while datetime.now(tz=NY_TZ).time() <= cutoff and active_lanes:
+        for symbol, strategy in list(active_lanes):
             symbol_args = args_for_symbol(args, symbol)
-            reason, decision = run_once(symbol_args, trading_date, config, dry_run)
+            reason, decision = run_once(
+                symbol_args,
+                trading_date,
+                config,
+                dry_run,
+                strategy,
+            )
 
             if reason == "APPROVED":
                 notify(
@@ -417,8 +509,8 @@ def main():
                         symbol_args,
                         format_approved_message(symbol_args, decision, dry_run),
                     )
-                approved_symbols.add(symbol)
-                active_symbols.remove(symbol)
+                approved_lanes.add((symbol, strategy))
+                active_lanes.remove((symbol, strategy))
                 continue
 
             if reason not in {"SESSION_NOT_READY", "NO_VALID_SIGNAL"}:
@@ -431,22 +523,31 @@ def main():
                     symbol_args,
                     f"Paper trading watch stopped for {symbol}: {reason}",
                 )
-                active_symbols.remove(symbol)
+                active_lanes.remove((symbol, strategy))
 
         sleep_time.sleep(args.poll_seconds)
 
-    if active_symbols:
+    if active_lanes:
         print("WATCH COMPLETE: no approved signal before cutoff.")
         if args.alert_status:
+            remaining = [
+                f"{symbol}:{strategy}"
+                for symbol, strategy in sorted(active_lanes)
+            ]
             send_mobile_alert(
                 args,
                 (
-                    f"Trading watch complete: {', '.join(sorted(active_symbols))}\n"
-                    f"No approved signal before {args.cutoff} New York."
+                    f"Trading watch complete.\n"
+                    f"No approved signal before {args.cutoff} New York for:\n"
+                    f"{', '.join(remaining)}"
                 ),
             )
-    if approved_symbols:
-        print(f"APPROVED SYMBOLS: {', '.join(sorted(approved_symbols))}")
+    if approved_lanes:
+        approved = [
+            f"{symbol}:{strategy}"
+            for symbol, strategy in sorted(approved_lanes)
+        ]
+        print(f"APPROVED LANES: {', '.join(approved)}")
 
 
 if __name__ == "__main__":

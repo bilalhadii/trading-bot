@@ -2,7 +2,7 @@ from dataclasses import dataclass
 
 import pytest
 
-from scripts.paper_trade import format_approved_message, parse_symbols
+from scripts.paper_trade import format_approved_message, parse_strategies, parse_symbols
 
 
 @dataclass
@@ -64,3 +64,17 @@ def test_parse_symbols_falls_back_to_single_symbol():
 def test_parse_symbols_rejects_empty_list():
     with pytest.raises(ValueError, match="At least one symbol"):
         parse_symbols("AAPL", " , ")
+
+
+def test_parse_strategies_accepts_known_lanes():
+    assert parse_strategies(
+        "ORB_RETEST_RECLAIM_BODY_2R, htf_breakout_retest_2r"
+    ) == [
+        "ORB_RETEST_RECLAIM_BODY_2R",
+        "HTF_BREAKOUT_RETEST_2R",
+    ]
+
+
+def test_parse_strategies_rejects_unknown_lanes():
+    with pytest.raises(ValueError, match="Unknown strategy"):
+        parse_strategies("NOPE")

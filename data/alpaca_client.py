@@ -44,3 +44,23 @@ def get_minute_bars(
     )
 
     return client.get_stock_bars(request)
+
+
+def get_daily_bars(
+    ticker: str,
+    start: datetime,
+    end: datetime,
+):
+    """
+    Retrieve daily historical stock bars from Alpaca.
+    """
+
+    request = StockBarsRequest(
+        symbol_or_symbols=ticker,
+        timeframe=TimeFrame.Day,
+        start=start,
+        end=end,
+        feed="sip",
+    )
+
+    return client.get_stock_bars(request)

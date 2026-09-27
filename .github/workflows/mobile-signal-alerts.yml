@@ -11,6 +11,10 @@ on:
         description: New York cutoff time
         required: true
         default: "10:15"
+      strategies:
+        description: Strategy lanes to scan, comma-separated
+        required: true
+        default: ORB_RETEST_RECLAIM_BODY_2R,HTF_BREAKOUT_RETEST_2R
   schedule:
     # 09:25 New York during US daylight time.
     - cron: "25 13 * * 1-5"
@@ -48,8 +52,10 @@ jobs:
         run: |
           SYMBOLS="${{ github.event.inputs.symbol || 'AAPL,NVDA,SNDK,INTC,GOOGL' }}"
           CUTOFF="${{ github.event.inputs.cutoff || '10:15' }}"
+          STRATEGIES="${{ github.event.inputs.strategies || 'ORB_RETEST_RECLAIM_BODY_2R,HTF_BREAKOUT_RETEST_2R' }}"
           python scripts/paper_trade.py \
             --symbols "$SYMBOLS" \
+            --strategies "$STRATEGIES" \
             --source live \
             --watch \
             --discord \
