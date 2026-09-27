@@ -141,16 +141,29 @@ def send_mobile_alert(args, message: str) -> bool:
 
 def format_approved_message(args, decision, dry_run: bool) -> str:
     plan = decision.plan
+    signal = decision.signal or {}
     mode = "DRY RUN" if dry_run else "PAPER SUBMIT"
+    action = "BUY / go LONG" if plan.entry_side == "buy" else "SELL SHORT"
+    breakout_time = signal.get("breakout_timestamp", "n/a")
+    retest_time = signal.get("retest_timestamp", "n/a")
+    confirmation_time = signal.get("confirmation_timestamp", "n/a")
     return (
-        f"{mode} SIGNAL: {args.symbol.upper()}\n"
-        f"Side: {plan.entry_side.upper()} {plan.quantity} shares\n"
-        f"Entry ref: {plan.entry_price_reference:.2f}\n"
-        f"Stop: {plan.stop_price:.2f}\n"
-        f"Target: {plan.target_price:.2f}\n"
-        f"Planned risk: ${plan.planned_risk_dollars:.2f}\n"
-        f"Notional: ${plan.notional_dollars:.2f}\n"
-        f"Strategy: {plan.strategy_version}"
+        f"{mode} TRADE ALERT - {args.symbol.upper()}\n\n"
+        f"What happened: Opening range breakout, retest, and confirmation detected.\n"
+        f"Suggested action: {action}\n\n"
+        f"Manual order details:\n"
+        f"- Shares: {plan.quantity}\n"
+        f"- Entry reference: {plan.entry_price_reference:.2f}\n"
+        f"- Stop loss: {plan.stop_price:.2f}\n"
+        f"- Take profit: {plan.target_price:.2f}\n"
+        f"- Planned max risk: ${plan.planned_risk_dollars:.2f}\n"
+        f"- Approx position value: ${plan.notional_dollars:.2f}\n\n"
+        f"Signal timing:\n"
+        f"- Breakout: {breakout_time}\n"
+        f"- Retest: {retest_time}\n"
+        f"- Confirmation: {confirmation_time}\n\n"
+        f"Reminder: This GitHub alert does not place the trade. "
+        f"Only enter manually if the order still makes sense in Alpaca."
     )
 
 
