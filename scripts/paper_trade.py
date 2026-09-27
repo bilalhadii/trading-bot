@@ -60,6 +60,7 @@ def parse_args():
     parser.add_argument("--telegram", action="store_true", help="Send Telegram notifications using TELEGRAM_BOT_TOKEN and TELEGRAM_CHAT_ID.")
     parser.add_argument("--discord", action="store_true", help="Send Discord notifications using DISCORD_WEBHOOK_URL.")
     parser.add_argument("--email", action="store_true", help="Send email notifications using SMTP_* secrets.")
+    parser.add_argument("--alert-status", action="store_true", help="Send start and no-signal completion alerts.")
     return parser.parse_args()
 
 
@@ -342,6 +343,15 @@ def main():
         f"WATCH MODE: {args.symbol.upper()} every {args.poll_seconds}s "
         f"until {args.cutoff} NY; mode={'DRY_RUN' if dry_run else 'SUBMIT'}"
     )
+    if args.alert_status:
+        send_mobile_alert(
+            args,
+            (
+                f"Trading watch started: {args.symbol.upper()}\n"
+                f"Mode: {'DRY RUN' if dry_run else 'PAPER SUBMIT'}\n"
+                f"Cutoff: {args.cutoff} New York"
+            ),
+        )
 
     while datetime.now(tz=NY_TZ).time() <= cutoff:
         reason, decision = run_once(args, trading_date, config, dry_run)
@@ -376,6 +386,14 @@ def main():
 
     if not seen_approved:
         print("WATCH COMPLETE: no approved signal before cutoff.")
+        if args.alert_status:
+            send_mobile_alert(
+                args,
+                (
+                    f"Trading watch complete: {args.symbol.upper()}\n"
+                    f"No approved signal before {args.cutoff} New York."
+                ),
+            )
 
 
 if __name__ == "__main__":

@@ -60,6 +60,7 @@ jobs:
             --watch \
             --discord \
             --email \
+            --alert-status \
             --poll-seconds 60 \
             --cutoff "$CUTOFF" \
             --equity 10000
