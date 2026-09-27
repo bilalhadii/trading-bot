@@ -313,6 +313,15 @@ def main():
 
     if not is_trading_session(trading_date):
         print("REJECTED: NO_EXCHANGE_SESSION")
+        if args.alert_status:
+            send_mobile_alert(
+                args,
+                (
+                    f"Trading watch skipped: {args.symbol.upper()}\n"
+                    f"Reason: NO_EXCHANGE_SESSION\n"
+                    f"Date: {trading_date}"
+                ),
+            )
         return
 
     config = PaperTradingConfig(
