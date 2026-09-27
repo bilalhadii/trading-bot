@@ -1,4 +1,5 @@
 import argparse
+from copy import copy
 import os
 import sys
 import time as sleep_time
@@ -44,6 +45,7 @@ def parse_args():
         description="Dry-run or submit one paper ORB retest bracket order."
     )
     parser.add_argument("--symbol", default="AAPL")
+    parser.add_argument("--symbols", default=None, help="Comma-separated symbols to scan in watch mode.")
     parser.add_argument("--date", default=None, help="YYYY-MM-DD, defaults to today in New York.")
     parser.add_argument("--source", choices=["db", "live"], default="db")
     parser.add_argument("--submit", action="store_true", help="Submit to Alpaca paper account.")
@@ -72,6 +74,24 @@ def trading_date_from_args(value: str | None):
 
 def parse_ny_clock(value: str) -> time:
     return datetime.strptime(value, "%H:%M").time()
+
+
+def parse_symbols(symbol: str, symbols: str | None = None) -> list[str]:
+    raw = symbols if symbols is not None else symbol
+    parsed = [
+        item.strip().upper()
+        for item in raw.split(",")
+        if item.strip()
+    ]
+    if not parsed:
+        raise ValueError("At least one symbol is required.")
+    return list(dict.fromkeys(parsed))
+
+
+def args_for_symbol(args, symbol: str):
+    symbol_args = copy(args)
+    symbol_args.symbol = symbol
+    return symbol_args
 
 
 def load_db_session(symbol: str, trading_date) -> pd.DataFrame:
@@ -317,6 +337,11 @@ def main():
     args = parse_args()
     trading_date = trading_date_from_args(args.date)
     dry_run = not args.submit
+    symbols = parse_symbols(args.symbol, args.symbols)
+
+    if args.submit and len(symbols) > 1:
+        print("REJECTED: SUBMIT_REQUIRES_SINGLE_SYMBOL")
+        return
 
     if args.submit:
         today_ny = datetime.now(tz=NY_TZ).date()
@@ -330,7 +355,7 @@ def main():
             send_mobile_alert(
                 args,
                 (
-                    f"Trading watch skipped: {args.symbol.upper()}\n"
+                    f"Trading watch skipped: {', '.join(symbols)}\n"
                     f"Reason: NO_EXCHANGE_SESSION\n"
                     f"Date: {trading_date}"
                 ),
@@ -346,7 +371,7 @@ def main():
     )
 
     if not args.watch:
-        reason, decision = run_once(args, trading_date, config, dry_run)
+        reason, decision = run_once(args_for_symbol(args, symbols[0]), trading_date, config, dry_run)
         if args.notify and reason == "APPROVED":
             notify(
                 "Paper Trading Signal",
@@ -360,62 +385,68 @@ def main():
         return
 
     cutoff = parse_ny_clock(args.cutoff)
-    seen_approved = False
+    approved_symbols = set()
+    active_symbols = set(symbols)
     print(
-        f"WATCH MODE: {args.symbol.upper()} every {args.poll_seconds}s "
+        f"WATCH MODE: {', '.join(symbols)} every {args.poll_seconds}s "
         f"until {args.cutoff} NY; mode={'DRY_RUN' if dry_run else 'SUBMIT'}"
     )
     if args.alert_status:
         send_mobile_alert(
             args,
             (
-                f"Trading watch started: {args.symbol.upper()}\n"
+                f"Trading watch started: {', '.join(symbols)}\n"
                 f"Mode: {'DRY RUN' if dry_run else 'PAPER SUBMIT'}\n"
                 f"Cutoff: {args.cutoff} New York"
             ),
         )
 
-    while datetime.now(tz=NY_TZ).time() <= cutoff:
-        reason, decision = run_once(args, trading_date, config, dry_run)
+    while datetime.now(tz=NY_TZ).time() <= cutoff and active_symbols:
+        for symbol in list(active_symbols):
+            symbol_args = args_for_symbol(args, symbol)
+            reason, decision = run_once(symbol_args, trading_date, config, dry_run)
 
-        if reason == "APPROVED":
-            notify(
-                "Paper Trading Signal",
-                f"{args.symbol.upper()} approved in {'dry-run' if dry_run else 'submit'} mode.",
-                enabled=args.notify,
-            )
-            if args.telegram and decision is not None:
-                send_mobile_alert(
-                    args,
-                    format_approved_message(args, decision, dry_run),
+            if reason == "APPROVED":
+                notify(
+                    "Paper Trading Signal",
+                    f"{symbol} approved in {'dry-run' if dry_run else 'submit'} mode.",
+                    enabled=args.notify,
                 )
-            seen_approved = True
-            break
+                if decision is not None:
+                    send_mobile_alert(
+                        symbol_args,
+                        format_approved_message(symbol_args, decision, dry_run),
+                    )
+                approved_symbols.add(symbol)
+                active_symbols.remove(symbol)
+                continue
 
-        if reason not in {"SESSION_NOT_READY", "NO_VALID_SIGNAL"}:
-            notify(
-                "Paper Trading Watch",
-                f"{args.symbol.upper()} stopped: {reason}",
-                enabled=args.notify,
-            )
-            send_mobile_alert(
-                args,
-                f"Paper trading watch stopped for {args.symbol.upper()}: {reason}",
-            )
-            break
+            if reason not in {"SESSION_NOT_READY", "NO_VALID_SIGNAL"}:
+                notify(
+                    "Paper Trading Watch",
+                    f"{symbol} stopped: {reason}",
+                    enabled=args.notify,
+                )
+                send_mobile_alert(
+                    symbol_args,
+                    f"Paper trading watch stopped for {symbol}: {reason}",
+                )
+                active_symbols.remove(symbol)
 
         sleep_time.sleep(args.poll_seconds)
 
-    if not seen_approved:
+    if active_symbols:
         print("WATCH COMPLETE: no approved signal before cutoff.")
         if args.alert_status:
             send_mobile_alert(
                 args,
                 (
-                    f"Trading watch complete: {args.symbol.upper()}\n"
+                    f"Trading watch complete: {', '.join(sorted(active_symbols))}\n"
                     f"No approved signal before {args.cutoff} New York."
                 ),
             )
+    if approved_symbols:
+        print(f"APPROVED SYMBOLS: {', '.join(sorted(approved_symbols))}")
 
 
 if __name__ == "__main__":

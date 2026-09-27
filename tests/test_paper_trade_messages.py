@@ -1,6 +1,8 @@
 from dataclasses import dataclass
 
-from scripts.paper_trade import format_approved_message
+import pytest
+
+from scripts.paper_trade import format_approved_message, parse_symbols
 
 
 @dataclass
@@ -46,3 +48,19 @@ def test_format_approved_message_is_readable_for_manual_execution():
     assert "Stop loss: 181.75" in message
     assert "Take profit: 184.53" in message
     assert "This GitHub alert does not place the trade" in message
+
+
+def test_parse_symbols_accepts_comma_separated_symbols():
+    assert parse_symbols(
+        "AAPL",
+        "aapl, nvda, SNDK, intc, googl, aapl",
+    ) == ["AAPL", "NVDA", "SNDK", "INTC", "GOOGL"]
+
+
+def test_parse_symbols_falls_back_to_single_symbol():
+    assert parse_symbols("nvda") == ["NVDA"]
+
+
+def test_parse_symbols_rejects_empty_list():
+    with pytest.raises(ValueError, match="At least one symbol"):
+        parse_symbols("AAPL", " , ")

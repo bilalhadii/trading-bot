@@ -4,9 +4,9 @@ on:
   workflow_dispatch:
     inputs:
       symbol:
-        description: Stock symbol to scan
+        description: Stock symbols to scan, comma-separated
         required: true
-        default: AAPL
+        default: AAPL,NVDA,SNDK,INTC,GOOGL
       cutoff:
         description: New York cutoff time
         required: true
@@ -46,10 +46,10 @@ jobs:
           TELEGRAM_CHAT_ID: ${{ secrets.TELEGRAM_CHAT_ID }}
           DISCORD_WEBHOOK_URL: ${{ secrets.DISCORD_WEBHOOK_URL }}
         run: |
-          SYMBOL="${{ github.event.inputs.symbol || 'AAPL' }}"
+          SYMBOLS="${{ github.event.inputs.symbol || 'AAPL,NVDA,SNDK,INTC,GOOGL' }}"
           CUTOFF="${{ github.event.inputs.cutoff || '10:15' }}"
           python scripts/paper_trade.py \
-            --symbol "$SYMBOL" \
+            --symbols "$SYMBOLS" \
             --source live \
             --watch \
             --discord \
