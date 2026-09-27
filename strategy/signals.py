@@ -93,6 +93,41 @@ def find_first_orb_retest(
     replacement retest is considered. The breakout's immediate entry fields
     are ignored and replaced only after confirmation.
     """
+    signal, _ = _find_first_orb_retest(
+        session_df=session_df,
+        or_high=or_high,
+        or_low=or_low,
+        max_bars=max_bars,
+        tolerance_or_fraction=tolerance_or_fraction,
+    )
+    return signal
+
+
+def find_first_orb_retest_rejection_reason(
+    session_df: pd.DataFrame,
+    or_high: float,
+    or_low: float,
+    max_bars: int,
+    tolerance_or_fraction: float,
+) -> Optional[str]:
+    """Return why the base retest setup failed, when diagnosable."""
+    _, reason = _find_first_orb_retest(
+        session_df=session_df,
+        or_high=or_high,
+        or_low=or_low,
+        max_bars=max_bars,
+        tolerance_or_fraction=tolerance_or_fraction,
+    )
+    return reason
+
+
+def _find_first_orb_retest(
+    session_df: pd.DataFrame,
+    or_high: float,
+    or_low: float,
+    max_bars: int,
+    tolerance_or_fraction: float,
+) -> tuple[Optional[dict], Optional[str]]:
     if isinstance(max_bars, bool) or not isinstance(max_bars, int) or max_bars < 1:
         raise ValueError("max_bars must be a positive integer.")
     if not 0 <= tolerance_or_fraction < float("inf"):
@@ -104,7 +139,7 @@ def find_first_orb_retest(
     df = session_df.sort_values("timestamp_ny").reset_index(drop=True)
     breakout = find_first_orb_breakout(df, or_high, or_low)
     if breakout is None:
-        return None
+        return None, "NO_BREAKOUT"
 
     is_long = breakout["direction"] == "LONG"
     boundary = or_high if is_long else or_low
@@ -114,12 +149,13 @@ def find_first_orb_retest(
         df["timestamp_ny"] == breakout["breakout_timestamp"]
     ][0]
     retest = None
+    window_end = min(breakout_index + max_bars + 1, len(df))
 
-    for index in range(breakout_index + 1, min(breakout_index + max_bars + 1, len(df))):
+    for index in range(breakout_index + 1, window_end):
         candle = df.iloc[index]
         close = float(candle["close"])
         if (is_long and close < lower) or (not is_long and close > upper):
-            return None
+            return None, "INVALIDATED"
 
         if retest is None:
             if float(candle["low"]) <= upper and float(candle["high"]) >= lower:
@@ -132,7 +168,7 @@ def find_first_orb_retest(
         )
         if confirmed:
             if index + 1 >= len(df):
-                return None
+                return None, "NO_ENTRY_CANDLE"
             entry = df.iloc[index + 1]
             return {
                 **breakout,
@@ -141,9 +177,11 @@ def find_first_orb_retest(
                 "retest_tolerance": tolerance,
                 "entry_timestamp": entry["timestamp_ny"],
                 "entry_price": float(entry["open"]),
-            }
+            }, None
 
-    return None
+    if retest is None:
+        return None, "NO_RETEST"
+    return None, "NO_CONFIRMATION"
 
 
 def find_first_orb_retest_reclaim(

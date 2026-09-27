@@ -1,0 +1,65 @@
+name: Mobile Signal Alerts
+
+on:
+  workflow_dispatch:
+    inputs:
+      symbol:
+        description: Stock symbol to scan
+        required: true
+        default: AAPL
+      cutoff:
+        description: New York cutoff time
+        required: true
+        default: "10:15"
+  schedule:
+    # 09:25 New York during US daylight time.
+    - cron: "25 13 * * 1-5"
+    # 09:25 New York during US standard time.
+    # During daylight time this starts after the cutoff and exits safely.
+    - cron: "25 14 * * 1-5"
+
+jobs:
+  mobile-signal-alerts:
+    runs-on: ubuntu-latest
+    timeout-minutes: 140
+
+    steps:
+      - name: Check out repository
+        uses: actions/checkout@v4
+
+      - name: Set up Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+
+      - name: Install dependencies
+        run: |
+          python -m pip install --upgrade pip
+          python -m pip install -r requirements.txt
+          python -m pip install alpaca-py python-dotenv pandas sqlalchemy psycopg2-binary pytest
+
+      - name: Run live dry-run signal watcher
+        env:
+          ALPACA_API_KEY: ${{ secrets.ALPACA_API_KEY }}
+          ALPACA_SECRET_KEY: ${{ secrets.ALPACA_SECRET_KEY }}
+          TELEGRAM_BOT_TOKEN: ${{ secrets.TELEGRAM_BOT_TOKEN }}
+          TELEGRAM_CHAT_ID: ${{ secrets.TELEGRAM_CHAT_ID }}
+          DISCORD_WEBHOOK_URL: ${{ secrets.DISCORD_WEBHOOK_URL }}
+          SMTP_HOST: ${{ secrets.SMTP_HOST }}
+          SMTP_PORT: ${{ secrets.SMTP_PORT }}
+          SMTP_USERNAME: ${{ secrets.SMTP_USERNAME }}
+          SMTP_PASSWORD: ${{ secrets.SMTP_PASSWORD }}
+          SMTP_SENDER: ${{ secrets.SMTP_SENDER }}
+          ALERT_EMAIL_TO: ${{ secrets.ALERT_EMAIL_TO }}
+        run: |
+          SYMBOL="${{ github.event.inputs.symbol || 'AAPL' }}"
+          CUTOFF="${{ github.event.inputs.cutoff || '10:15' }}"
+          python scripts/paper_trade.py \
+            --symbol "$SYMBOL" \
+            --source live \
+            --watch \
+            --discord \
+            --email \
+            --poll-seconds 60 \
+            --cutoff "$CUTOFF" \
+            --equity 10000

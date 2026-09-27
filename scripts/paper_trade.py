@@ -1,0 +1,382 @@
+import argparse
+import os
+import sys
+import time as sleep_time
+from datetime import datetime, time
+from pathlib import Path
+from zoneinfo import ZoneInfo
+
+import pandas as pd
+
+ROOT_DIR = Path(__file__).resolve().parents[1]
+if str(ROOT_DIR) not in sys.path:
+    sys.path.insert(0, str(ROOT_DIR))
+
+from paper_trading.alpaca_adapter import submit_bracket_order
+from paper_trading.audit import append_audit_record, decision_to_audit_record
+from paper_trading.broker import (
+    create_alpaca_paper_trading_client,
+    get_account_snapshot,
+    symbol_is_clear_to_trade,
+)
+from paper_trading.config import PaperTradingConfig
+from paper_trading.notifications import (
+    notify,
+    notify_discord,
+    notify_email,
+    notify_telegram,
+)
+from paper_trading.signal_builder import build_retest_body_paper_trade_decision
+from strategy.market_calendar import (
+    SessionQuality,
+    compare_session_minutes,
+    get_expected_regular_session_minutes,
+    is_trading_session,
+)
+from strategy.session import add_new_york_time
+
+
+NY_TZ = ZoneInfo("America/New_York")
+
+
+def parse_args():
+    parser = argparse.ArgumentParser(
+        description="Dry-run or submit one paper ORB retest bracket order."
+    )
+    parser.add_argument("--symbol", default="AAPL")
+    parser.add_argument("--date", default=None, help="YYYY-MM-DD, defaults to today in New York.")
+    parser.add_argument("--source", choices=["db", "live"], default="db")
+    parser.add_argument("--submit", action="store_true", help="Submit to Alpaca paper account.")
+    parser.add_argument("--equity", type=float, default=None, help="Override account equity.")
+    parser.add_argument("--realized-daily-pnl", type=float, default=0.0)
+    parser.add_argument("--risk-fraction", type=float, default=PaperTradingConfig.risk_fraction)
+    parser.add_argument("--max-notional-fraction", type=float, default=PaperTradingConfig.max_notional_fraction)
+    parser.add_argument("--max-daily-loss-fraction", type=float, default=PaperTradingConfig.max_daily_loss_fraction)
+    parser.add_argument("--disable-shorts", action="store_true")
+    parser.add_argument("--watch", action="store_true", help="Keep polling until the cutoff time.")
+    parser.add_argument("--poll-seconds", type=int, default=30)
+    parser.add_argument("--cutoff", default="10:15", help="New York HH:MM stop time for watch mode.")
+    parser.add_argument("--notify", action="store_true", help="Send macOS notifications for decisions.")
+    parser.add_argument("--telegram", action="store_true", help="Send Telegram notifications using TELEGRAM_BOT_TOKEN and TELEGRAM_CHAT_ID.")
+    parser.add_argument("--discord", action="store_true", help="Send Discord notifications using DISCORD_WEBHOOK_URL.")
+    parser.add_argument("--email", action="store_true", help="Send email notifications using SMTP_* secrets.")
+    return parser.parse_args()
+
+
+def trading_date_from_args(value: str | None):
+    if value:
+        return datetime.strptime(value, "%Y-%m-%d").date()
+    return datetime.now(tz=NY_TZ).date()
+
+
+def parse_ny_clock(value: str) -> time:
+    return datetime.strptime(value, "%H:%M").time()
+
+
+def load_db_session(symbol: str, trading_date) -> pd.DataFrame:
+    from sqlalchemy import text
+
+    from database.connection import engine
+
+    query = text("""
+        SELECT
+            ticker,
+            timestamp,
+            open,
+            high,
+            low,
+            close,
+            volume,
+            trade_count,
+            vwap
+        FROM market_candles
+        WHERE ticker = :symbol
+          AND DATE(timestamp AT TIME ZONE 'America/New_York') = :trading_date
+        ORDER BY timestamp;
+    """)
+
+    with engine.connect() as conn:
+        df = pd.read_sql(
+            query,
+            conn,
+            params={
+                "symbol": symbol.upper(),
+                "trading_date": str(trading_date),
+            },
+        )
+
+    if df.empty:
+        return df
+
+    df["timestamp"] = pd.to_datetime(df["timestamp"], utc=True)
+    return add_new_york_time(df)
+
+
+def send_mobile_alert(args, message: str) -> bool:
+    sent = notify_telegram(
+        bot_token=os.getenv("TELEGRAM_BOT_TOKEN"),
+        chat_id=os.getenv("TELEGRAM_CHAT_ID"),
+        message=message,
+        enabled=args.telegram,
+    )
+    sent = notify_discord(
+        webhook_url=os.getenv("DISCORD_WEBHOOK_URL"),
+        message=message,
+        enabled=args.discord,
+    ) or sent
+    sent = notify_email(
+        smtp_host=os.getenv("SMTP_HOST"),
+        smtp_port=int(os.getenv("SMTP_PORT", "587")),
+        smtp_username=os.getenv("SMTP_USERNAME"),
+        smtp_password=os.getenv("SMTP_PASSWORD"),
+        sender=os.getenv("SMTP_SENDER"),
+        recipient=os.getenv("ALERT_EMAIL_TO"),
+        subject=f"Trading Alert: {args.symbol.upper()}",
+        message=message,
+        enabled=args.email,
+    ) or sent
+    return sent
+
+
+def format_approved_message(args, decision, dry_run: bool) -> str:
+    plan = decision.plan
+    mode = "DRY RUN" if dry_run else "PAPER SUBMIT"
+    return (
+        f"{mode} SIGNAL: {args.symbol.upper()}\n"
+        f"Side: {plan.entry_side.upper()} {plan.quantity} shares\n"
+        f"Entry ref: {plan.entry_price_reference:.2f}\n"
+        f"Stop: {plan.stop_price:.2f}\n"
+        f"Target: {plan.target_price:.2f}\n"
+        f"Planned risk: ${plan.planned_risk_dollars:.2f}\n"
+        f"Notional: ${plan.notional_dollars:.2f}\n"
+        f"Strategy: {plan.strategy_version}"
+    )
+
+
+def load_live_session(symbol: str, trading_date) -> pd.DataFrame:
+    from data.alpaca_client import get_minute_bars
+
+    session_start = datetime.combine(
+        trading_date,
+        time(9, 30),
+        tzinfo=NY_TZ,
+    )
+    now_ny = datetime.now(tz=NY_TZ)
+    session_end = max(now_ny, session_start)
+
+    bars = get_minute_bars(
+        ticker=symbol.upper(),
+        start=session_start.astimezone(ZoneInfo("UTC")),
+        end=session_end.astimezone(ZoneInfo("UTC")),
+    )
+
+    df = bars.df.reset_index()
+    if df.empty:
+        return df
+
+    df = df.rename(columns={"symbol": "ticker"})
+    df["timestamp"] = pd.to_datetime(df["timestamp"], utc=True)
+    return add_new_york_time(df)
+
+
+def filter_expected_session_minutes(df: pd.DataFrame, trading_date) -> tuple[pd.DataFrame, object]:
+    expected_minutes = get_expected_regular_session_minutes(trading_date)
+    if expected_minutes.empty or df.empty:
+        return df.iloc[0:0].copy(), compare_session_minutes(trading_date, [])
+
+    expected_set = set(expected_minutes)
+    scheduled_df = df[
+        df["timestamp_ny"].dt.floor("min").isin(expected_set)
+    ].copy()
+
+    report = compare_session_minutes(
+        trading_date,
+        scheduled_df["timestamp_ny"],
+    )
+    return scheduled_df.sort_values("timestamp_ny"), report
+
+
+def run_once(args, trading_date, config, dry_run: bool) -> tuple[str, object | None]:
+    dry_run = not args.submit
+
+    trading_client = None
+    account = None
+    if args.equity is None or args.submit:
+        trading_client = create_alpaca_paper_trading_client()
+        account = get_account_snapshot(trading_client)
+        account_equity = account.equity
+    else:
+        account_equity = args.equity
+
+    if account is not None and account.trading_blocked:
+        print("REJECTED: ACCOUNT_TRADING_BLOCKED")
+        return "ACCOUNT_TRADING_BLOCKED", None
+
+    if args.source == "live":
+        session_df = load_live_session(args.symbol, trading_date)
+    else:
+        session_df = load_db_session(args.symbol, trading_date)
+
+    session_df, quality = filter_expected_session_minutes(
+        session_df,
+        trading_date,
+    )
+
+    if quality.quality not in {
+        SessionQuality.COMPLETE,
+        SessionQuality.SCHEDULED_EARLY_CLOSE,
+        SessionQuality.DATA_GAP,
+    } or not quality.opening_range_complete:
+        print(f"REJECTED: SESSION_NOT_READY quality={quality.quality.value}")
+        return "SESSION_NOT_READY", None
+
+    decision = build_retest_body_paper_trade_decision(
+        session_df=session_df,
+        symbol=args.symbol,
+        account_equity=account_equity,
+        config=config,
+        realized_daily_pnl=args.realized_daily_pnl,
+    )
+
+    print(f"Symbol: {args.symbol.upper()}")
+    print(f"Date: {trading_date}")
+    print(f"Source: {args.source}")
+    print(f"Mode: {'DRY_RUN' if dry_run else 'SUBMIT'}")
+    print(f"Decision: {decision.reason}")
+
+    if not decision.approved or decision.plan is None:
+        append_audit_record(
+            decision_to_audit_record(
+                decision=decision,
+                symbol=args.symbol,
+                trading_date=trading_date,
+                source=args.source,
+                dry_run=dry_run,
+            )
+        )
+        return decision.reason, decision
+
+    if args.submit:
+        if trading_client is None:
+            trading_client = create_alpaca_paper_trading_client()
+        if not symbol_is_clear_to_trade(trading_client, args.symbol):
+            print("REJECTED: SYMBOL_HAS_OPEN_POSITION_OR_ORDER")
+            append_audit_record(
+                decision_to_audit_record(
+                    decision=decision,
+                    symbol=args.symbol,
+                    trading_date=trading_date,
+                    source=args.source,
+                    dry_run=dry_run,
+                )
+            )
+            return "SYMBOL_HAS_OPEN_POSITION_OR_ORDER", decision
+
+    result = submit_bracket_order(
+        trading_client=trading_client,
+        plan=decision.plan,
+        dry_run=dry_run,
+    )
+    append_audit_record(
+        decision_to_audit_record(
+            decision=decision,
+            symbol=args.symbol,
+            trading_date=trading_date,
+            source=args.source,
+            dry_run=dry_run,
+            order_result=result,
+        )
+    )
+
+    payload = result.payload
+    print(f"Submitted: {result.submitted}")
+    print(f"Side: {payload.side}")
+    print(f"Quantity: {payload.qty}")
+    print(f"Stop: {payload.stop_loss_stop_price:.2f}")
+    print(f"Target: {payload.take_profit_limit_price:.2f}")
+    print(f"Planned risk: ${decision.plan.planned_risk_dollars:.2f}")
+    print(f"Notional: ${decision.plan.notional_dollars:.2f}")
+    return "APPROVED", decision
+
+
+def main():
+    args = parse_args()
+    trading_date = trading_date_from_args(args.date)
+    dry_run = not args.submit
+
+    if args.submit:
+        today_ny = datetime.now(tz=NY_TZ).date()
+        if args.source != "live" or trading_date != today_ny:
+            print("REJECTED: SUBMIT_REQUIRES_LIVE_SOURCE_AND_TODAY")
+            return
+
+    if not is_trading_session(trading_date):
+        print("REJECTED: NO_EXCHANGE_SESSION")
+        return
+
+    config = PaperTradingConfig(
+        risk_fraction=args.risk_fraction,
+        max_trade_risk_fraction=args.risk_fraction,
+        max_notional_fraction=args.max_notional_fraction,
+        max_daily_loss_fraction=args.max_daily_loss_fraction,
+        allow_short_selling=not args.disable_shorts,
+    )
+
+    if not args.watch:
+        reason, decision = run_once(args, trading_date, config, dry_run)
+        if args.notify and reason == "APPROVED":
+            notify(
+                "Paper Trading Signal",
+                f"{args.symbol.upper()} approved in {'dry-run' if dry_run else 'submit'} mode.",
+            )
+        if args.telegram and reason == "APPROVED" and decision is not None:
+            send_mobile_alert(
+                args,
+                format_approved_message(args, decision, dry_run),
+            )
+        return
+
+    cutoff = parse_ny_clock(args.cutoff)
+    seen_approved = False
+    print(
+        f"WATCH MODE: {args.symbol.upper()} every {args.poll_seconds}s "
+        f"until {args.cutoff} NY; mode={'DRY_RUN' if dry_run else 'SUBMIT'}"
+    )
+
+    while datetime.now(tz=NY_TZ).time() <= cutoff:
+        reason, decision = run_once(args, trading_date, config, dry_run)
+
+        if reason == "APPROVED":
+            notify(
+                "Paper Trading Signal",
+                f"{args.symbol.upper()} approved in {'dry-run' if dry_run else 'submit'} mode.",
+                enabled=args.notify,
+            )
+            if args.telegram and decision is not None:
+                send_mobile_alert(
+                    args,
+                    format_approved_message(args, decision, dry_run),
+                )
+            seen_approved = True
+            break
+
+        if reason not in {"SESSION_NOT_READY", "NO_VALID_SIGNAL"}:
+            notify(
+                "Paper Trading Watch",
+                f"{args.symbol.upper()} stopped: {reason}",
+                enabled=args.notify,
+            )
+            send_mobile_alert(
+                args,
+                f"Paper trading watch stopped for {args.symbol.upper()}: {reason}",
+            )
+            break
+
+        sleep_time.sleep(args.poll_seconds)
+
+    if not seen_approved:
+        print("WATCH COMPLETE: no approved signal before cutoff.")
+
+
+if __name__ == "__main__":
+    main()

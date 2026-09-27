@@ -14,6 +14,7 @@ from strategy.market_calendar import (
 from strategy.signals import (
     find_first_orb_breakout,
     find_first_orb_retest,
+    find_first_orb_retest_rejection_reason,
     find_first_orb_retest_reclaim,
     find_first_orb_retest_reclaim_body,
     find_first_orb_retest_reclaim_body_rejection_reason,
@@ -27,7 +28,7 @@ TICKER = "AAPL"
 START_DATE = "2024-01-02"
 END_DATE = "2024-12-31"
 
-STRATEGY_VERSION = "ORB_RETEST_RECLAIM_BODY_2R"
+STRATEGY_VERSION = "ORB_RETEST_2R"
 RETEST_MAX_BARS = 5
 RETEST_TOLERANCE_OR_FRACTION = 0.10
 
@@ -220,6 +221,7 @@ def main():
     valid_setups = 0
     reclaim_body_disagreement_rejects = 0
     trades = []
+    retest_rejection_reasons = {}
 
     for trading_date in trading_dates:
 
@@ -310,6 +312,17 @@ def main():
                     )
                     if reason == "BODY_DISAGREEMENT":
                         reclaim_body_disagreement_rejects += 1
+                elif not is_reclaim:
+                    reason = find_first_orb_retest_rejection_reason(
+                        day_df,
+                        or_high=orb["or_high"],
+                        or_low=orb["or_low"],
+                        max_bars=RETEST_MAX_BARS,
+                        tolerance_or_fraction=RETEST_TOLERANCE_OR_FRACTION,
+                    )
+                    retest_rejection_reasons[reason] = (
+                        retest_rejection_reasons.get(reason, 0) + 1
+                    )
                 continue
 
         signal_time = breakout.get("confirmation_timestamp", breakout["breakout_timestamp"])
@@ -456,95 +469,6 @@ def main():
         # --------------------------------------------------
 
         trade = {
-            "strategy_version":
-                STRATEGY_VERSION,
-
-            "ticker":
-                TICKER,
-
-            "trade_date":
-                trading_date,
-
-            "direction":
-                breakout["direction"],
-
-            "signal_time":
-                signal_time,
-
-            "entry_time":
-                breakout["entry_timestamp"],
-
-            "exit_time":
-                result["exit_time"],
-
-            "entry_price":
-                entry_price,
-
-            "stop_price":
-                stop_price,
-
-            "target_price":
-                target_price,
-
-            "exit_price":
-                result["exit_price"],
-
-            "risk_amount":
-                risk,
-
-            "pnl":
-                pnl,
-
-            "r_multiple":
-                result["r_multiple"],
-
-            "outcome":
-                result["outcome"],
-
-            "mae_price":
-                excursion["mae_price"],
-
-            "mfe_price":
-                excursion["mfe_price"],
-
-            "mae_r":
-                excursion["mae_r"],
-
-            "mfe_r":
-                excursion["mfe_r"],
-        }
-
-
-        
-        result = simulate_trade(
-            session_df=day_df,
-            entry_time=breakout["entry_timestamp"],
-            direction=breakout["direction"],
-            entry_price=entry_price,
-            stop_price=stop_price,
-            target_price=target_price,
-            break_even_r=None,
-        )
-
-        excursion = calculate_excursion(
-            session_df=day_df,
-            entry_time=breakout["entry_timestamp"],
-            exit_time=result["exit_time"],
-            entry_price=entry_price,
-            direction=breakout["direction"],
-            stop_price=stop_price,
-            target_price=target_price,
-        )
-
-        if result is None:
-            continue
-
-        pnl = (
-            result["r_multiple"]
-            * risk
-        )
-
-        trade = {
             "strategy_version": STRATEGY_VERSION,
             "ticker": TICKER,
             "trade_date": trading_date,
@@ -582,6 +506,10 @@ def main():
     print(f"Executed:      {len(trades)}")
     if is_reclaim_body:
         print(f"Body disagreement rejects: {reclaim_body_disagreement_rejects}")
+    if is_retest and not is_reclaim and not is_reclaim_body and retest_rejection_reasons:
+        print("Retest rejects:")
+        for reason, count in sorted(retest_rejection_reasons.items()):
+            print(f"  {reason}: {count}")
 
     if trades:
 
