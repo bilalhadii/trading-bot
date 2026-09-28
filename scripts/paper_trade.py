@@ -436,6 +436,10 @@ def main():
             )
         return
 
+    if args.watch and datetime.now(tz=NY_TZ).time() > parse_ny_clock(args.cutoff):
+        print("REJECTED: AFTER_CUTOFF")
+        return
+
     config = PaperTradingConfig(
         risk_fraction=args.risk_fraction,
         max_trade_risk_fraction=args.risk_fraction,

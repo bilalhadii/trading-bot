@@ -16,11 +16,17 @@ on:
         required: true
         default: ORB_RETEST_RECLAIM_BODY_2R,HTF_BREAKOUT_RETEST_2R
   schedule:
-    # 09:25 New York during US daylight time.
-    - cron: "25 13 * * 1-5"
-    # 09:25 New York during US standard time.
-    # During daylight time this starts after the cutoff and exits safely.
-    - cron: "25 14 * * 1-5"
+    # Backup triggers around the intended 09:25 New York start during
+    # US daylight time. GitHub scheduled runs can be delayed or dropped,
+    # so we use several attempts and keep only the latest active run.
+    - cron: "20,25,30,35,40 13 * * 1-5"
+    # Backup triggers around the intended 09:25 New York start during
+    # US standard time. During daylight time, after-cutoff runs exit.
+    - cron: "20,25,30,35,40 14 * * 1-5"
+
+concurrency:
+  group: mobile-signal-alerts-${{ github.ref }}
+  cancel-in-progress: true
 
 jobs:
   mobile-signal-alerts:
