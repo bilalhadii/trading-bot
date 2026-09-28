@@ -1,0 +1,47 @@
+name: Schedule Canary
+
+on:
+  workflow_dispatch:
+  schedule:
+    - cron: "*/5 * * * *"
+
+jobs:
+  schedule-canary:
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+
+    steps:
+      - name: Check out repository
+        uses: actions/checkout@v4
+
+      - name: Set up Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+
+      - name: Send Discord canary alert
+        env:
+          DISCORD_WEBHOOK_URL: ${{ secrets.DISCORD_WEBHOOK_URL }}
+        run: |
+          python - <<'PY'
+          import os
+          import urllib.request
+          import json
+          from datetime import datetime, timezone
+
+          webhook = os.environ["DISCORD_WEBHOOK_URL"]
+          message = {
+              "content": (
+                  "Schedule canary fired automatically at "
+                  f"{datetime.now(timezone.utc).isoformat()}"
+              )
+          }
+          request = urllib.request.Request(
+              webhook,
+              data=json.dumps(message).encode("utf-8"),
+              headers={"Content-Type": "application/json"},
+              method="POST",
+          )
+          with urllib.request.urlopen(request, timeout=10) as response:
+              print("Discord status:", response.status)
+          PY
