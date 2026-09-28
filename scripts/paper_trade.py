@@ -438,6 +438,16 @@ def main():
 
     if args.watch and datetime.now(tz=NY_TZ).time() > parse_ny_clock(args.cutoff):
         print("REJECTED: AFTER_CUTOFF")
+        if args.alert_status:
+            send_mobile_alert(
+                args,
+                (
+                    f"Trading watch skipped: {', '.join(symbols)}\n"
+                    f"Strategies: {', '.join(strategies)}\n"
+                    f"Reason: AFTER_CUTOFF\n"
+                    f"Cutoff: {args.cutoff} New York"
+                ),
+            )
         return
 
     config = PaperTradingConfig(
