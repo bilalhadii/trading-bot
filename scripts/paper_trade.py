@@ -5,6 +5,7 @@ import sys
 import time as sleep_time
 from datetime import datetime, time
 from pathlib import Path
+from urllib.parse import urlencode
 from zoneinfo import ZoneInfo
 
 import pandas as pd
@@ -189,7 +190,68 @@ def load_db_session(symbol: str, trading_date) -> pd.DataFrame:
     return add_new_york_time(df)
 
 
-def send_mobile_alert(args, message: str) -> bool:
+def build_approval_url(args, decision, risk_dollars: float, submit_paper: bool) -> str | None:
+    base_url = os.getenv("APPROVAL_BASE_URL")
+    if not base_url or decision is None or decision.plan is None:
+        return None
+
+    plan = decision.plan
+    direction = "LONG" if plan.entry_side == "buy" else "SHORT"
+    query = urlencode(
+        {
+            "symbol": plan.symbol,
+            "strategy": plan.strategy_version,
+            "direction": direction,
+            "entry": f"{plan.entry_price_reference:.4f}",
+            "stop": f"{plan.stop_price:.4f}",
+            "target": f"{plan.target_price:.4f}",
+            "risk_dollars": f"{risk_dollars:.2f}",
+            "submit_paper": "true" if submit_paper else "false",
+        }
+    )
+    return f"{base_url.rstrip('/')}/approve?{query}"
+
+
+def build_discord_approval_components(args, decision) -> list[dict] | None:
+    dry_run_url = build_approval_url(
+        args=args,
+        decision=decision,
+        risk_dollars=100.0,
+        submit_paper=False,
+    )
+    paper_url = build_approval_url(
+        args=args,
+        decision=decision,
+        risk_dollars=100.0,
+        submit_paper=True,
+    )
+    if not dry_run_url and not paper_url:
+        return None
+
+    buttons = []
+    if dry_run_url:
+        buttons.append(
+            {
+                "type": 2,
+                "style": 5,
+                "label": "Dry-run $100",
+                "url": dry_run_url,
+            }
+        )
+    if paper_url:
+        buttons.append(
+            {
+                "type": 2,
+                "style": 5,
+                "label": "Approve Paper $100",
+                "url": paper_url,
+            }
+        )
+
+    return [{"type": 1, "components": buttons}]
+
+
+def send_mobile_alert(args, message: str, components: list[dict] | None = None) -> bool:
     sent = notify_telegram(
         bot_token=os.getenv("TELEGRAM_BOT_TOKEN"),
         chat_id=os.getenv("TELEGRAM_CHAT_ID"),
@@ -199,6 +261,7 @@ def send_mobile_alert(args, message: str) -> bool:
     sent = notify_discord(
         webhook_url=os.getenv("DISCORD_WEBHOOK_URL"),
         message=message,
+        components=components,
         enabled=args.discord,
     ) or sent
     sent = notify_email(
@@ -577,6 +640,10 @@ def main():
                     send_mobile_alert(
                         symbol_args,
                         format_approved_message(symbol_args, decision, dry_run),
+                        components=build_discord_approval_components(
+                            symbol_args,
+                            decision,
+                        ),
                     )
                 approved_lanes.add((symbol, strategy))
                 active_lanes.remove((symbol, strategy))

@@ -5,6 +5,7 @@ import pytest
 from scripts.paper_trade import (
     HTF_BREAKOUT_STRATEGY_VERSION,
     ORB_BODY_STRATEGY_VERSION,
+    build_approval_url,
     build_strategy_lanes,
     format_approved_message,
     parse_strategies,
@@ -102,3 +103,17 @@ def test_build_strategy_lanes_allows_separate_htf_symbols():
     assert ("MSFT", HTF_BREAKOUT_STRATEGY_VERSION) in lanes
     assert ("GOOGL", HTF_BREAKOUT_STRATEGY_VERSION) in lanes
     assert ("MSFT", ORB_BODY_STRATEGY_VERSION) not in lanes
+
+
+def test_build_approval_url_returns_none_without_base_url(monkeypatch):
+    monkeypatch.delenv("APPROVAL_BASE_URL", raising=False)
+
+    assert build_approval_url(
+        args=FakeArgs(),
+        decision=FakeDecision(
+            plan=FakePlan(),
+            signal={},
+        ),
+        risk_dollars=100.0,
+        submit_paper=True,
+    ) is None

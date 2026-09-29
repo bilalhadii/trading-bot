@@ -69,6 +69,7 @@ def notify_telegram(
 def notify_discord(
     webhook_url: str | None,
     message: str,
+    components: list[dict] | None = None,
     enabled: bool = True,
 ) -> bool:
     if not enabled:
@@ -76,7 +77,10 @@ def notify_discord(
     if not webhook_url:
         return False
 
-    data = json.dumps({"content": message}).encode("utf-8")
+    payload = {"content": message}
+    if components:
+        payload["components"] = components
+    data = json.dumps(payload).encode("utf-8")
 
     request = urllib.request.Request(
         webhook_url,

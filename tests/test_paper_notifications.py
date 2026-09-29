@@ -46,6 +46,15 @@ def test_notify_discord_missing_webhook_returns_false():
     )
 
 
+def test_notify_discord_disabled_with_components_returns_false():
+    assert not notify_discord(
+        "https://example.com/webhook",
+        "message",
+        components=[{"type": 1, "components": []}],
+        enabled=False,
+    )
+
+
 def test_notify_email_disabled_returns_false():
     assert not notify_email(
         smtp_host="smtp.example.com",
