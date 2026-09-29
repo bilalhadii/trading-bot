@@ -44,6 +44,10 @@ from strategy.session import add_new_york_time
 
 NY_TZ = ZoneInfo("America/New_York")
 ORB_BODY_STRATEGY_VERSION = "ORB_RETEST_RECLAIM_BODY_2R"
+DEFAULT_HTF_SYMBOLS = (
+    "AAPL,MSFT,NVDA,AMZN,GOOGL,META,TSLA,AMD,AVGO,"
+    "JPM,V,MA,NFLX,COST,ORCL,CRM,ADBE"
+)
 
 
 def parse_args():
@@ -52,6 +56,11 @@ def parse_args():
     )
     parser.add_argument("--symbol", default="AAPL")
     parser.add_argument("--symbols", default=None, help="Comma-separated symbols to scan in watch mode.")
+    parser.add_argument(
+        "--htf-symbols",
+        default=None,
+        help="Comma-separated symbols for HTF_BREAKOUT_RETEST_2R. Defaults to --symbols when omitted.",
+    )
     parser.add_argument(
         "--strategies",
         default=f"{ORB_BODY_STRATEGY_VERSION},{HTF_BREAKOUT_STRATEGY_VERSION}",
@@ -116,6 +125,23 @@ def parse_strategies(strategies: str) -> list[str]:
     if unknown:
         raise ValueError(f"Unknown strategy lane(s): {', '.join(unknown)}")
     return list(dict.fromkeys(parsed))
+
+
+def build_strategy_lanes(
+    symbols: list[str],
+    strategies: list[str],
+    htf_symbols: list[str] | None = None,
+) -> set[tuple[str, str]]:
+    lanes = set()
+    for strategy in strategies:
+        strategy_symbols = (
+            htf_symbols
+            if strategy == HTF_BREAKOUT_STRATEGY_VERSION and htf_symbols is not None
+            else symbols
+        )
+        for symbol in strategy_symbols:
+            lanes.add((symbol, strategy))
+    return lanes
 
 
 def args_for_symbol(args, symbol: str):
@@ -432,6 +458,11 @@ def main():
     dry_run = not args.submit
     symbols = parse_symbols(args.symbol, args.symbols)
     strategies = parse_strategies(args.strategies)
+    htf_symbols = (
+        parse_symbols(args.symbol, args.htf_symbols)
+        if args.htf_symbols is not None
+        else None
+    )
 
     if args.submit and (len(symbols) > 1 or len(strategies) > 1):
         print("REJECTED: SUBMIT_REQUIRES_SINGLE_SYMBOL_AND_STRATEGY")
@@ -450,6 +481,7 @@ def main():
                 args,
                 (
                     f"Trading watch skipped: {', '.join(symbols)}\n"
+                    f"HTF symbols: {', '.join(htf_symbols or symbols)}\n"
                     f"Strategies: {', '.join(strategies)}\n"
                     f"Reason: NO_EXCHANGE_SESSION\n"
                     f"Date: {trading_date}"
@@ -464,6 +496,7 @@ def main():
                 args,
                 (
                     f"Trading watch skipped: {', '.join(symbols)}\n"
+                    f"HTF symbols: {', '.join(htf_symbols or symbols)}\n"
                     f"Strategies: {', '.join(strategies)}\n"
                     f"Reason: AFTER_CUTOFF\n"
                     f"Cutoff: {args.cutoff} New York"
@@ -501,11 +534,11 @@ def main():
 
     cutoff = parse_ny_clock(args.cutoff)
     approved_lanes = set()
-    active_lanes = {
-        (symbol, strategy)
-        for symbol in symbols
-        for strategy in strategies
-    }
+    active_lanes = build_strategy_lanes(
+        symbols=symbols,
+        strategies=strategies,
+        htf_symbols=htf_symbols,
+    )
     print(
         f"WATCH MODE: {', '.join(symbols)} every {args.poll_seconds}s "
         f"until {args.cutoff} NY; mode={'DRY_RUN' if dry_run else 'SUBMIT'}; "
@@ -516,6 +549,7 @@ def main():
             args,
             (
                 f"Trading watch started: {', '.join(symbols)}\n"
+                f"HTF symbols: {', '.join(htf_symbols or symbols)}\n"
                 f"Strategies: {', '.join(strategies)}\n"
                 f"Mode: {'DRY RUN' if dry_run else 'PAPER SUBMIT'}\n"
                 f"Cutoff: {args.cutoff} New York"

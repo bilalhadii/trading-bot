@@ -15,6 +15,10 @@ on:
         description: Strategy lanes to scan, comma-separated
         required: true
         default: ORB_RETEST_RECLAIM_BODY_2R,HTF_BREAKOUT_RETEST_2R
+      htf_symbols:
+        description: HTF strategy symbols, comma-separated
+        required: true
+        default: AAPL,MSFT,NVDA,AMZN,GOOGL,META,TSLA,AMD,AVGO,JPM,V,MA,NFLX,COST,ORCL,CRM,ADBE
   schedule:
     # Backup triggers around the intended 09:25 New York start during
     # US daylight time. GitHub scheduled runs can be delayed or dropped,
@@ -59,8 +63,10 @@ jobs:
           SYMBOLS="${{ github.event.inputs.symbol || 'AAPL,NVDA,SNDK,INTC,GOOGL' }}"
           CUTOFF="${{ github.event.inputs.cutoff || '10:15' }}"
           STRATEGIES="${{ github.event.inputs.strategies || 'ORB_RETEST_RECLAIM_BODY_2R,HTF_BREAKOUT_RETEST_2R' }}"
+          HTF_SYMBOLS="${{ github.event.inputs.htf_symbols || 'AAPL,MSFT,NVDA,AMZN,GOOGL,META,TSLA,AMD,AVGO,JPM,V,MA,NFLX,COST,ORCL,CRM,ADBE' }}"
           python scripts/paper_trade.py \
             --symbols "$SYMBOLS" \
+            --htf-symbols "$HTF_SYMBOLS" \
             --strategies "$STRATEGIES" \
             --source live \
             --watch \

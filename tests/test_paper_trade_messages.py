@@ -2,7 +2,14 @@ from dataclasses import dataclass
 
 import pytest
 
-from scripts.paper_trade import format_approved_message, parse_strategies, parse_symbols
+from scripts.paper_trade import (
+    HTF_BREAKOUT_STRATEGY_VERSION,
+    ORB_BODY_STRATEGY_VERSION,
+    build_strategy_lanes,
+    format_approved_message,
+    parse_strategies,
+    parse_symbols,
+)
 
 
 @dataclass
@@ -78,3 +85,20 @@ def test_parse_strategies_accepts_known_lanes():
 def test_parse_strategies_rejects_unknown_lanes():
     with pytest.raises(ValueError, match="Unknown strategy"):
         parse_strategies("NOPE")
+
+
+def test_build_strategy_lanes_allows_separate_htf_symbols():
+    lanes = build_strategy_lanes(
+        symbols=["AAPL", "NVDA"],
+        htf_symbols=["AAPL", "MSFT", "GOOGL"],
+        strategies=[
+            ORB_BODY_STRATEGY_VERSION,
+            HTF_BREAKOUT_STRATEGY_VERSION,
+        ],
+    )
+
+    assert ("AAPL", ORB_BODY_STRATEGY_VERSION) in lanes
+    assert ("NVDA", ORB_BODY_STRATEGY_VERSION) in lanes
+    assert ("MSFT", HTF_BREAKOUT_STRATEGY_VERSION) in lanes
+    assert ("GOOGL", HTF_BREAKOUT_STRATEGY_VERSION) in lanes
+    assert ("MSFT", ORB_BODY_STRATEGY_VERSION) not in lanes
