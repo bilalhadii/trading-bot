@@ -12,6 +12,7 @@ load_dotenv()
 
 API_KEY = os.getenv("ALPACA_API_KEY")
 SECRET_KEY = os.getenv("ALPACA_SECRET_KEY")
+DATA_FEED = os.getenv("ALPACA_DATA_FEED", "iex")
 
 
 if not API_KEY or not SECRET_KEY:
@@ -40,7 +41,7 @@ def get_minute_bars(
         timeframe=TimeFrame.Minute,
         start=start,
         end=end,
-        feed="sip",
+        feed=DATA_FEED,
     )
 
     return client.get_stock_bars(request)
@@ -60,7 +61,7 @@ def get_daily_bars(
         timeframe=TimeFrame.Day,
         start=start,
         end=end,
-        feed="sip",
+        feed=DATA_FEED,
     )
 
     return client.get_stock_bars(request)

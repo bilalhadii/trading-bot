@@ -273,14 +273,35 @@ def filter_expected_session_minutes(df: pd.DataFrame, trading_date) -> tuple[pd.
     if expected_minutes.empty or df.empty:
         return df.iloc[0:0].copy(), compare_session_minutes(trading_date, [])
 
+    quality_timestamps = None
+    today_ny = datetime.now(tz=NY_TZ).date()
+    if trading_date == today_ny:
+        current_minute = pd.Timestamp.now(tz=NY_TZ).floor("min")
+        future_minutes = expected_minutes[
+            expected_minutes > current_minute
+        ]
+        quality_timestamps = future_minutes
+        expected_minutes = expected_minutes[
+            expected_minutes <= current_minute
+        ]
+
     expected_set = set(expected_minutes)
     scheduled_df = df[
         df["timestamp_ny"].dt.floor("min").isin(expected_set)
     ].copy()
 
+    timestamps_for_quality = scheduled_df["timestamp_ny"]
+    if quality_timestamps is not None:
+        timestamps_for_quality = pd.DatetimeIndex(
+            pd.to_datetime(
+                list(timestamps_for_quality) + list(quality_timestamps),
+                utc=True,
+            )
+        ).tz_convert(NY_TZ)
+
     report = compare_session_minutes(
         trading_date,
-        scheduled_df["timestamp_ny"],
+        timestamps_for_quality,
     )
     return scheduled_df.sort_values("timestamp_ny"), report
 
