@@ -1,6 +1,7 @@
 import pytest
 
 from paper_trading.order_plan import (
+    build_fixed_risk_bracket_order_plan,
     build_bracket_order_plan,
     normalize_direction,
 )
@@ -117,3 +118,37 @@ def test_build_short_bracket_order_plan_rejects_wrong_target_side():
             account_equity=10_000.0,
             risk_fraction=0.01,
         )
+
+
+def test_build_fixed_risk_bracket_order_plan_long():
+    plan = build_fixed_risk_bracket_order_plan(
+        symbol="NVDA",
+        strategy_version="HTF_BREAKOUT_RETEST_2R",
+        direction="LONG",
+        entry_price=100.0,
+        stop_price=98.0,
+        target_price=104.0,
+        risk_dollars=100.0,
+    )
+
+    assert plan.quantity == 50
+    assert plan.planned_risk_dollars == 100.0
+    assert plan.entry_side == "buy"
+    assert plan.exit_side == "sell"
+
+
+def test_build_fixed_risk_bracket_order_plan_short():
+    plan = build_fixed_risk_bracket_order_plan(
+        symbol="AAPL",
+        strategy_version="ORB_RETEST_RECLAIM_BODY_2R",
+        direction="SHORT",
+        entry_price=100.0,
+        stop_price=102.0,
+        target_price=96.0,
+        risk_dollars=100.0,
+    )
+
+    assert plan.quantity == 50
+    assert plan.planned_risk_dollars == 100.0
+    assert plan.entry_side == "sell"
+    assert plan.exit_side == "buy"
